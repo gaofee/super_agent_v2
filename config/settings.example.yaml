@@ -1,0 +1,43 @@
+workspace_root: "."
+output_root: "outputs"
+
+extractor:
+  # 为空时使用内置默认 FFmpeg 音频提取命令
+  ffmpeg_audio_cmd: "ffmpeg -y -i {input_video} -vn -acodec pcm_s16le -ar 16000 -ac 1 {audio_out}"
+
+asr:
+  # 留空则进入本地降级模式（自动生成演示文案 + 时间段）
+  # 示例：whisper {audio_in} --language Chinese --model medium --output_format txt --output_dir {output_dir}
+  command: ""
+  transcript_file_pattern: "{stem}.json"
+
+rewriter:
+  # 示例：ollama run qwen2.5:14b "{prompt}"
+  command: ""
+  fallback_template: "请基于以下文案进行语义级仿写并保持结构清晰：\n\n{source_text}"
+
+tts:
+  # 留空则进入本地降级模式（自动生成占位音频）
+  # 示例：python /path/to/cosyvoice/infer.py --text-file {text_file} --prompt-wav {voice_ref} --out {audio_out}
+  command: ""
+
+avatar:
+  # 留空则进入本地降级模式（自动生成占位数字人口播）
+  # 示例：python /path/to/heygem/run.py --avatar-id {avatar_id} --audio {audio_in} --out {video_out}
+  command: ""
+
+video:
+  subtitle_style: "FontName=PingFang SC,Fontsize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0"
+  cover_time_sec: 1
+  title_max_length: 28
+
+bgm:
+  default_bgm: ""
+  volume: 0.12
+
+uploader:
+  # 各平台命令留空时将做本地模拟发布并输出 report 文件
+  command_douyin: ""
+  command_hudiehao: ""
+  command_kuaishou: ""
+  command_xiaohongshu: ""

@@ -22,13 +22,11 @@ class HeyGemDriver:
         duration = media_duration_seconds(audio_in, fallback=8.0)
         audio_q = shell_quote(audio_in)
         video_q = shell_quote(video_out)
-        label = avatar_id.replace(":", "_").replace("'", "")
         cmd = (
             f"ffmpeg -y -f lavfi -i color=c=0x1e3a8a:s=1080x1920:r=25:d={duration} "
             f"-i {audio_q} "
             f"-vf \"drawbox=x=80:y=120:w=920:h=1680:color=white@0.12:t=fill,"
-            f"drawtext=text='Digital Host: {label}':x=(w-text_w)/2:y=160:fontsize=48:fontcolor=white,"
-            f"drawtext=text='LOCAL DEMO MODE':x=(w-text_w)/2:y=230:fontsize=32:fontcolor=white@0.86\" "
+            f"drawbox=x=120:y=if(lt(mod(t\\,2)\\,1)\\,650\\,700):w=840:h=140:color=white@0.32:t=fill\" "
             f"-map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -shortest {video_q}"
         )
         run_local_command(cmd)

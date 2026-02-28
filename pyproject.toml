@@ -4,14 +4,11 @@ version = "0.1.0"
 description = "Local end-to-end short-video production pipeline"
 requires-python = ">=3.10"
 dependencies = [
-  "pyyaml>=6.0.1",
-  "typer>=0.12.3",
-  "rich>=13.7.1",
   "gradio>=4.44.0"
 ]
 
 [project.scripts]
-super-agent = "main:app"
+super-agent = "main:main"
 super-agent-ui = "client.web:run"
 
 [tool.setuptools]

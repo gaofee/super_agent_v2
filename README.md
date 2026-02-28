@@ -46,6 +46,15 @@ pip install -e .
 cp config/settings.example.yaml config/settings.yaml
 ```
 
+本地模型部署步骤见：
+- [LOCAL_MODEL_SETUP.md](/Users/gaofei/Desktop/工具代码/super_agent_v2/LOCAL_MODEL_SETUP.md)
+
+一键准备本地模型目录：
+
+```bash
+bash scripts/download_local_models.sh
+```
+
 只用 FFmpeg 也可以直接跑通全链路（演示模式）：
 
 - ASR 未配置时自动生成降级文案和时间轴
@@ -77,11 +86,13 @@ super-agent-ui
 
 ```bash
 super-agent doctor
+super-agent audit
 ```
 
 ## 本地依赖
 
 - FFmpeg（必须）
+- yt-dlp（建议，用于 URL 下载）
 - Whisper（可通过 `whisper` 命令或你自己的 ASR 脚本）
 - CosyVoice 推理脚本（通过命令行适配）
 - HeyGem 本地驱动（通过命令行适配）
@@ -102,3 +113,26 @@ super-agent doctor
 2. `tts.command`: CosyVoice 推理命令，写出 `{audio_out}`
 3. `avatar.command`: HeyGem 驱动命令，写出 `{video_out}`
 4. `uploader.command_*`: 各平台上传脚本（`{video}` `{cover}` `{title}`）
+
+当前默认已提供 `tools/*.py` wrapper 模板，可直接运行并逐步替换：
+
+- `tools/asr_wrapper.py`: Whisper 优先，失败自动降级
+- `tools/rewriter_wrapper.py`: Ollama 优先，失败自动降级
+- `tools/tts_wrapper.py`: 可用 `COSYVOICE_CMD` 注入真实 TTS 命令
+- `tools/avatar_wrapper.py`: 占位数字人视频生成，可替换 HeyGem
+- `tools/social_upload_wrapper.py`: 统一调用 social-auto-upload
+
+上传前需设置：
+
+```bash
+export SOCIAL_AUTO_UPLOAD_DIR=/abs/path/social-auto-upload
+```
+
+## social-auto-upload 联调参数
+
+- `platform`: `douyin | xhs | kuaishou | channels`
+- `account`: 对应平台账号别名（你本地 social-auto-upload 已登录的账号名）
+- `action`: 固定 `upload`
+- `video`: 对应 `{video}`
+- `-pt`: 对应 `{cover}`
+- `-t`: 对应 `{title}`

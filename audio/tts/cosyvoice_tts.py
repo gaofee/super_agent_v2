@@ -17,12 +17,11 @@ class CosyVoiceTTS:
         text = read_text(rewritten_script).replace("\n", " ").strip()
         command_tmpl = str(cfg.get("command", "")).strip()
         if command_tmpl:
-            if voice_ref is None:
-                raise ValueError("voice_ref is required when tts.command is configured")
+            voice_ref_arg = voice_ref if voice_ref else "__EMPTY__"
             run_local_command(
                 command_tmpl.format(
                     text_file=rewritten_script,
-                    voice_ref=voice_ref,
+                    voice_ref=voice_ref_arg,
                     audio_out=audio_out,
                     text=text,
                 )

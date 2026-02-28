@@ -21,14 +21,16 @@ class MultiPlatformPublisher:
             if not command:
                 results[platform] = "local-simulated: no command configured"
                 continue
+            safe_title = title.replace('"', "").replace("'", "")
             completed = run_local_command(
-                command.format(video=final_video, cover=cover, title=title.replace('"', "")),
+                command.format(video=final_video, cover=cover, title=safe_title),
                 check=False,
             )
             if completed.returncode == 0:
                 results[platform] = "ok"
             else:
-                results[platform] = f"failed: {completed.stderr.strip()[:160]}"
+                detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+                results[platform] = f"failed: {detail[:160]}"
 
         publish_report = {
             "title": title,

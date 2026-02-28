@@ -15,8 +15,14 @@ class ScriptRewriter:
         command = str(cfg.get("command", "")).strip()
         if command:
             prompt = source_text.replace('"', '\\"')
-            completed = run_local_command(command.format(prompt=prompt, source_text=source_text.replace("\n", " ")))
+            completed = run_local_command(
+                command.format(prompt=prompt, source_text=source_text.replace("\n", " ")),
+                check=False,
+            )
             rewritten = completed.stdout.strip() or completed.stderr.strip()
+            if completed.returncode != 0 or not rewritten:
+                template = str(cfg.get("fallback_template", "{source_text}"))
+                rewritten = template.format(source_text=source_text)
         else:
             template = str(cfg.get("fallback_template", "{source_text}"))
             rewritten = template.format(source_text=source_text)

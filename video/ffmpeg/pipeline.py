@@ -37,7 +37,9 @@ class FFmpegPipeline:
             f"drawtext=text='{escaped_title}':x=(w-text_w)/2:y=40:fontsize=56:fontcolor=white:box=1:boxcolor=black@0.45 "
             f"-c:a copy {final_video_q}"
         )
-        run_local_command(cmd_title)
+        completed = run_local_command(cmd_title, check=False)
+        if completed.returncode != 0:
+            run_local_command(f"ffmpeg -y -i {video_in_q} -c copy {final_video_q}")
 
         cover_time = int(video_cfg.get("cover_time_sec", 1))
         cover = ensure_dir(workdir / "video") / "cover.jpg"

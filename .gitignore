@@ -4,3 +4,37 @@ __pycache__/
 outputs/*
 !outputs/.gitkeep
 config/settings.yaml
+
+# Environment files
+.env
+.env.local
+
+# Large model files and archives
+*.zip
+*.bin
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.trt
+
+# Local models directory (large files)
+local_models/cache/
+local_models/cosyvoice/
+local_models/heygem/
+local_models/whisper/
+local_models/social-auto-upload/
+local_models/social-auto-upload-oh-v1.0/
+!local_models/README*.txt
+!local_models/*.md
+
+# Videos and audio outputs
+*.mp4
+*.mp3
+*.wav
+*.avi
+*.mov
+
+# OS files
+.DS_Store
+Thumbs.db

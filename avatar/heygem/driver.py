@@ -10,12 +10,30 @@ class HeyGemDriver:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def generate(self, avatar_id: str, audio_in: Path, workdir: Path) -> Path:
+    def generate(
+        self,
+        avatar_id: str,
+        audio_in: Path,
+        workdir: Path,
+        source_video: Path | None = None,
+        infer_batch: int = 20,
+        infer_factor: float = 1.5,
+    ) -> Path:
         cfg = self.settings.section("avatar")
         command = str(cfg.get("command", "")).strip()
         video_out = ensure_dir(workdir / "avatar") / "avatar_raw.mp4"
         if command:
-            run_local_command(command.format(avatar_id=avatar_id, audio_in=audio_in, video_out=video_out))
+            source_video_arg = source_video if source_video else "__EMPTY__"
+            run_local_command(
+                command.format(
+                    avatar_id=avatar_id,
+                    audio_in=audio_in,
+                    video_out=video_out,
+                    source_video=source_video_arg,
+                    infer_batch=infer_batch,
+                    infer_factor=infer_factor,
+                )
+            )
             return video_out
 
         # Local fallback: generate a simple talking-host placeholder video bound to audio duration.

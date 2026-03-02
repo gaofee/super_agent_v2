@@ -11,7 +11,7 @@ class CosyVoiceTTS:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def synthesize(self, rewritten_script: Path, voice_ref: Path | None, workdir: Path) -> Path:
+    def synthesize(self, rewritten_script: Path, voice_ref: str | None, workdir: Path) -> Path:
         cfg = self.settings.section("tts")
         audio_out = ensure_dir(workdir / "audio") / "tts.wav"
         text = read_text(rewritten_script).replace("\n", " ").strip()

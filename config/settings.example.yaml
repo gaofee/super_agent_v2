@@ -7,21 +7,26 @@ extractor:
 
 asr:
   # 本地 ASR wrapper：优先 Whisper，失败自动降级到本地占位转写
-  command: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/asr_wrapper.py --audio-in {audio_in} --output-dir {output_dir}"
+  command: "python tools/asr_wrapper.py --audio-in {audio_in} --output-dir {output_dir}"
   transcript_file_pattern: "{stem}.json"
 
 rewriter:
   # 文案仿写使用 DeepSeek API（未配置 API KEY 时自动降级本地仿写）
-  command: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/rewriter_deepseek_wrapper.py --prompt \"{prompt}\""
+  command: "python tools/rewriter_deepseek_wrapper.py --prompt \"{prompt}\""
   fallback_template: "请基于以下文案进行语义级仿写并保持结构清晰：\n\n{source_text}"
 
 tts:
   # 本地 TTS wrapper：可通过 COSYVOICE_CMD 接入真实命令，否则自动降级占位音频
-  command: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/tts_wrapper.py --text-file {text_file} --voice-ref {voice_ref} --audio-out {audio_out} --text \"{text}\""
+  command: "python tools/tts_wrapper.py --text-file {text_file} --voice-ref {voice_ref} --audio-out {audio_out} --text \"{text}\""
+  # 预置音色：可填本地参考音频绝对路径；若不存在则使用 *_voice_token
+  female_voice_ref: "local_models/cosyvoice/voices/female.wav"
+  male_voice_ref: "local_models/cosyvoice/voices/male.wav"
+  female_voice_token: "female"
+  male_voice_token: "male"
 
 avatar:
   # 本地数字人 wrapper：可替换为真实 HeyGem 命令；默认输出占位口播视频
-  command: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/avatar_wrapper.py --avatar-id {avatar_id} --audio-in {audio_in} --video-out {video_out}"
+  command: "python tools/avatar_wrapper.py --avatar-id {avatar_id} --audio-in {audio_in} --video-out {video_out} --source-video {source_video} --infer-batch {infer_batch} --infer-factor {infer_factor}"
 
 video:
   subtitle_style: "FontName=PingFang SC,Fontsize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0"
@@ -29,12 +34,12 @@ video:
   title_max_length: 28
 
 bgm:
-  default_bgm: "/Users/gaofei/Desktop/工具代码/super_agent_v2/assets/default_bgm.mp3"
+  default_bgm: "assets/default_bgm.mp3"
   volume: 0.12
 
 uploader:
   # 需要先 export SOCIAL_AUTO_UPLOAD_DIR=/abs/path/social-auto-upload
-  command_douyin: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/social_upload_wrapper.py --platform douyin --account main --video {video} --cover {cover} --title '{title}'"
-  command_hudiehao: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/social_upload_wrapper.py --platform channels --account hudiehao --video {video} --cover {cover} --title '{title}'"
-  command_kuaishou: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/social_upload_wrapper.py --platform kuaishou --account main --video {video} --cover {cover} --title '{title}'"
-  command_xiaohongshu: "python3 /Users/gaofei/Desktop/工具代码/super_agent_v2/tools/social_upload_wrapper.py --platform xhs --account main --video {video} --cover {cover} --title '{title}'"
+  command_douyin: "python tools/social_upload_wrapper.py --platform douyin --account main --video {video} --cover {cover} --title '{title}'"
+  command_hudiehao: "python tools/social_upload_wrapper.py --platform channels --account hudiehao --video {video} --cover {cover} --title '{title}'"
+  command_kuaishou: "python tools/social_upload_wrapper.py --platform kuaishou --account main --video {video} --cover {cover} --title '{title}'"
+  command_xiaohongshu: "python tools/social_upload_wrapper.py --platform xhs --account main --video {video} --cover {cover} --title '{title}'"

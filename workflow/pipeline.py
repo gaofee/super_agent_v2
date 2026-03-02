@@ -37,7 +37,14 @@ class FullWorkflow:
 
         rewritten_script_path = self.rewriter.rewrite(source_text, workdir)
         tts_audio = self.tts.synthesize(rewritten_script_path, data.voice_ref, workdir)
-        avatar_video = self.avatar.generate(data.avatar_id, tts_audio, workdir)
+        avatar_video = self.avatar.generate(
+            data.avatar_id,
+            tts_audio,
+            workdir,
+            source_video=data.avatar_source_video,
+            infer_batch=data.infer_batch,
+            infer_factor=data.infer_factor,
+        )
 
         rewritten_text = read_text(rewritten_script_path)
         subtitle_srt = self.subtitle.generate(segments, rewritten_text, workdir)

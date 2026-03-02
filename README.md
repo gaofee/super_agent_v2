@@ -47,7 +47,7 @@ cp config/settings.example.yaml config/settings.yaml
 ```
 
 本地模型部署步骤见：
-- [LOCAL_MODEL_SETUP.md](/Users/gaofei/Desktop/工具代码/super_agent_v2/LOCAL_MODEL_SETUP.md)
+- `LOCAL_MODEL_SETUP.md`
 
 一键准备本地模型目录：
 
@@ -89,6 +89,14 @@ super-agent doctor
 super-agent audit
 ```
 
+一键环境与回归脚本：
+
+```bash
+bash scripts/bootstrap_env.sh
+bash scripts/preflight_check.sh
+bash scripts/run_full_validation.sh
+```
+
 ## 本地依赖
 
 - FFmpeg（必须）
@@ -127,6 +135,27 @@ super-agent audit
 ```bash
 export SOCIAL_AUTO_UPLOAD_DIR=/abs/path/social-auto-upload
 ```
+
+## Windows 运行说明
+
+- 建议在 `PowerShell` 中运行，Python 使用 `python` 命令。
+- `config/settings.yaml` 已改为相对路径和 `python tools/*.py` 命令模板，可直接跨平台使用。
+- 先准备依赖：
+  - 安装 FFmpeg，并确保 `ffmpeg`/`ffprobe` 在 `PATH`
+  - 安装 Git 和 Python 3.10+
+  - `pip install -e .`
+- 模型部署见：
+  - `local_models/DEPLOY_STEPS.md`
+  - `local_models/WEIGHT_CHECKLIST.md`
+
+当前在本机 mac 环境可确认：
+- 步骤 2-7：代码链路可运行（DeepSeek 改写 + 本地 TTS/数字人/字幕/BGM/标题）
+- 步骤 8：上传脚本可调用，但是否真正发布取决于你本地 social-auto-upload 登录态与浏览器环境
+
+当前在本机 mac 环境无法完整实测：
+- 步骤 1 的 URL 下载（缺少可用 `yt-dlp` 依赖且网络受限）
+  - Windows 请先执行 `python -m pip install yt-dlp`
+  - 再运行 `python main.py doctor --settings config/settings.yaml` 确认 `yt-dlp` 可用
 
 ## social-auto-upload 联调参数
 

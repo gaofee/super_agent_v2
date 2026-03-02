@@ -17,6 +17,13 @@ def run_cmd(cmd: str) -> int:
     return proc.returncode
 
 
+def shell_quote(path_or_text: str | Path) -> str:
+    text = str(path_or_text)
+    if os.name == "nt":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--text-file", required=True)
@@ -43,10 +50,17 @@ def main() -> int:
             return 0
 
     text = args.text.strip() or read_text(text_file).replace("\n", " ").strip()
+    voice_hint = (args.voice_ref or "").lower()
+    if "male" in voice_hint or "男" in voice_hint:
+        freq = 185
+    elif "female" in voice_hint or "女" in voice_hint:
+        freq = 235
+    else:
+        freq = 220
     duration = max(4.0, min(30.0, math.ceil(len(text) / 8.0)))
     ffmpeg = (
-        f"ffmpeg -y -f lavfi -i sine=frequency=220:sample_rate=24000:duration={duration} "
-        f"-af volume=0.12 {shlex.quote(str(audio_out))}"
+        f"ffmpeg -y -f lavfi -i sine=frequency={freq}:sample_rate=24000:duration={duration} "
+        f"-af volume=0.12 {shell_quote(audio_out)}"
     )
     return run_cmd(ffmpeg)
 

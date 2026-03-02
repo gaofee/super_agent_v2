@@ -17,6 +17,9 @@ class WorkflowInput:
     input_video: Path
     avatar_id: str
     voice_ref: Path | None = None
+    avatar_source_video: Path | None = None
+    infer_batch: int = 20
+    infer_factor: float = 1.5
     platforms: List[str] = field(default_factory=lambda: ["douyin", "hudiehao", "kuaishou", "xiaohongshu"])
 
 

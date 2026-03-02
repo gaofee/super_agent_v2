@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -48,7 +49,10 @@ def first_nonempty(*values: Optional[str]) -> str:
 
 
 def shell_quote(path_or_text: str | Path) -> str:
-    return shlex.quote(str(path_or_text))
+    text = str(path_or_text)
+    if os.name == "nt":
+        return subprocess.list2cmdline([text])
+    return shlex.quote(text)
 
 
 def media_duration_seconds(media_file: Path, fallback: float = 6.0) -> float:

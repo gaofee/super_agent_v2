@@ -30,7 +30,7 @@ class MultiPlatformPublisher:
                 results[platform] = "ok"
             else:
                 detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-                results[platform] = f"failed: {detail[:160]}"
+                results[platform] = f"failed(rc={completed.returncode}): {detail[:2000]}"
 
         publish_report = {
             "title": title,

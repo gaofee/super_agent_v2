@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from pathlib import Path
 
 from core.config import Settings
+from core.env_loader import load_local_env
 from core.models import WorkflowInput
 from workflow.pipeline import FullWorkflow
+
+load_local_env()
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
@@ -41,6 +45,12 @@ def doctor(args: argparse.Namespace) -> int:
         found = shutil.which(cmd)
         status = "ok" if found else "warn"
         print(f"binary:{cmd}: {status} ({found or 'not found'})")
+    try:
+        import gradio  # type: ignore
+
+        print(f"python:gradio: ok ({gradio.__version__})")
+    except ModuleNotFoundError:
+        print("python:gradio: warn (not installed)")
 
     asr_cmd = str(cfg.section("asr").get("command", "")).strip()
     tts_cmd = str(cfg.section("tts").get("command", "")).strip()
@@ -62,6 +72,13 @@ def audit(args: argparse.Namespace) -> int:
     tts_cmd = str(cfg.section("tts").get("command", "")).strip()
     avatar_cmd = str(cfg.section("avatar").get("command", "")).strip()
     bgm_default = str(cfg.section("bgm").get("default_bgm", "")).strip()
+    whisper_model_dir = os.getenv("WHISPER_MODEL_DIR", "").strip()
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    cosyvoice_cmd = os.getenv("COSYVOICE_CMD", "").strip()
+    cosyvoice_model_dir = os.getenv("COSYVOICE_MODEL_DIR", "").strip()
+    heygem_cmd = os.getenv("HEYGEM_CMD", "").strip()
+    heygem_model_dir = os.getenv("HEYGEM_MODEL_DIR", "").strip()
+    social_dir = os.getenv("SOCIAL_AUTO_UPLOAD_DIR", "").strip()
     uploader_cfg = cfg.section("uploader")
     uploader_ready = {
         "douyin": bool(str(uploader_cfg.get("command_douyin", "")).strip()),
@@ -70,16 +87,30 @@ def audit(args: argparse.Namespace) -> int:
         "xiaohongshu": bool(str(uploader_cfg.get("command_xiaohongshu", "")).strip()),
     }
 
+    asr_status = "production" if asr_cmd and whisper_model_dir and Path(whisper_model_dir).exists() else "degraded"
+    rewrite_status = "production" if rewrite_cmd and deepseek_key else "degraded"
+    tts_status = (
+        "production"
+        if tts_cmd and ((cosyvoice_cmd and (not cosyvoice_model_dir or Path(cosyvoice_model_dir).exists())) or (cosyvoice_model_dir and Path(cosyvoice_model_dir).exists()))
+        else "degraded"
+    )
+    avatar_status = (
+        "production"
+        if avatar_cmd and heygem_cmd and heygem_model_dir and Path(heygem_model_dir).exists()
+        else "degraded"
+    )
+    upload_status = "production" if all(uploader_ready.values()) and social_dir and Path(social_dir).exists() else "degraded"
+
     checks = [
-        ("1. 对标文案提取", "production" if asr_cmd else "demo"),
-        ("2. 文案语义仿写", "production" if rewrite_cmd else "demo"),
-        ("3. 声音克隆合成", "production" if tts_cmd else "demo"),
-        ("4. 数字人口播", "production" if avatar_cmd else "demo"),
+        ("1. 对标文案提取", asr_status),
+        ("2. 文案语义仿写", rewrite_status),
+        ("3. 声音克隆合成", tts_status),
+        ("4. 数字人口播", avatar_status),
         ("5. 自动字幕", "production"),
         ("6. 自动BGM", "production" if bgm_default else "demo"),
         ("7. 自动标题", "production"),
         ("8. 自动封面", "production"),
-        ("9. 多平台发布", "production" if all(uploader_ready.values()) else "partial"),
+        ("9. 多平台发布", upload_status),
     ]
     print("Capability Audit")
     for name, status in checks:

@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--voice-ref", default="")
     parser.add_argument("--audio-out", required=True)
     parser.add_argument("--text", default="")
+    parser.add_argument("--prompt-text", default="")
     args = parser.parse_args()
 
     repo_root = Path(args.model_dir).resolve()
@@ -79,11 +80,14 @@ def main() -> int:
         return 5
 
     voice_ref = "" if args.voice_ref == "__EMPTY__" else args.voice_ref.strip()
+    prompt_text = args.prompt_text.strip() or os.getenv("COSYVOICE_PROMPT_TEXT", "").strip()
     speaker_hint = voice_ref.lower()
     try:
         cosyvoice = AutoModel(model_dir=str(model_dir))
         if voice_ref and Path(voice_ref).exists():
-            prompt_text = "这是一段用于音色克隆的参考语音。"
+            if not prompt_text:
+                print("empty prompt_text for voice clone", file=sys.stderr)
+                return 5
             stream = cosyvoice.inference_zero_shot(text, prompt_text, voice_ref, stream=False)
         else:
             speaker = "中文男" if ("male" in speaker_hint or "男" in speaker_hint) else "中文女"

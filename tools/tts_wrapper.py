@@ -19,6 +19,10 @@ def run_cmd(cmd: str) -> subprocess.CompletedProcess:
     env.setdefault("KMP_USE_SHM", "0")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("KMP_AFFINITY", "disabled")
+    env.setdefault("MPLCONFIGDIR", "/tmp/cosyvoice_mpl")
+    env.setdefault("NUMBA_CACHE_DIR", "/tmp/cosyvoice_numba")
+    Path(env["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+    Path(env["NUMBA_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
     return subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
 
 

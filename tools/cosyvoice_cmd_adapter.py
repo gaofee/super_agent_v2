@@ -89,11 +89,24 @@ def main() -> int:
             speaker = "中文男" if ("male" in speaker_hint or "男" in speaker_hint) else "中文女"
             stream = cosyvoice.inference_sft(text, speaker, stream=False)
 
-        first = next(iter(stream), None)
-        if not first or "tts_speech" not in first:
+        chunks = []
+        for item in stream:
+            speech = item.get("tts_speech") if isinstance(item, dict) else None
+            if speech is not None:
+                chunks.append(speech)
+        if not chunks:
             print("cosyvoice inference returned empty audio", file=sys.stderr)
             return 6
-        torchaudio.save(str(audio_out), first["tts_speech"], cosyvoice.sample_rate)
+        if len(chunks) == 1:
+            merged = chunks[0]
+        else:
+            try:
+                import torch  # type: ignore
+            except Exception as exc:  # noqa: BLE001
+                print(f"import torch failed: {exc}", file=sys.stderr)
+                return 4
+            merged = torch.cat(chunks, dim=-1)
+        torchaudio.save(str(audio_out), merged, cosyvoice.sample_rate)
     except Exception as exc:  # noqa: BLE001
         print(f"cosyvoice inference failed: {exc}", file=sys.stderr)
         return 7

@@ -766,6 +766,15 @@ def _build_srt_from_text(text: str, duration: float) -> str:
     return "\n".join(rows).strip() + "\n"
 
 
+def _cleanup_old_run_dirs(root: Path, keep: int = 3) -> None:
+    if keep < 1 or not root.exists():
+        return
+    dirs = [item for item in root.iterdir() if item.is_dir()]
+    dirs.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    for old_dir in dirs[keep:]:
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+
 def _deepseek_title_tags(script_text: str) -> tuple[str, str, str, str] | None:
     api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
@@ -947,7 +956,9 @@ def _extract_copy(
     settings_path: str,
 ) -> str:
     settings = Settings.load(Path(settings_path))
-    workdir = ensure_dir(settings.output_root / "manual_extract" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    extract_root = ensure_dir(settings.output_root / "manual_extract")
+    workdir = ensure_dir(extract_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(extract_root, keep=3)
 
     material_path = _coerce_upload_path(material_video)
     if material_path:
@@ -973,7 +984,9 @@ def _rewrite_copy(source_text: str, language: str, model_name: str, settings_pat
     src = source_text.strip() or "这里是待仿写文案。"
     settings = Settings.load(Path(settings_path))
     rewriter = ScriptRewriter(settings)
-    workdir = ensure_dir(Path("outputs") / "manual_rewrite" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    rewrite_root = ensure_dir(Path("outputs") / "manual_rewrite")
+    workdir = ensure_dir(rewrite_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(rewrite_root, keep=3)
     rewritten_path = rewriter.rewrite(src, workdir)
     rewritten = rewritten_path.read_text(encoding="utf-8").strip()
     if rewritten and rewritten != src:
@@ -1017,7 +1030,9 @@ def _tts_from_rewrite(
         return None, voice_err, None
 
     tts = CosyVoiceTTS(settings)
-    workdir = ensure_dir(settings.output_root / "manual_tts" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    tts_root = ensure_dir(settings.output_root / "manual_tts")
+    workdir = ensure_dir(tts_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(tts_root, keep=3)
     voice_ref = _prepare_reference_audio(voice_ref, workdir) if voice_ref else None
     text_path = workdir / "script" / "rewritten.txt"
     text_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1030,6 +1045,8 @@ def _tts_from_rewrite(
     adjusted_audio = raw_audio
     if abs(pitch - 1.0) > 1e-6 or delay > 1e-6:
         adjusted_audio = workdir / "audio" / "tts_adjusted.wav"
+        if adjusted_audio.exists():
+            adjusted_audio.unlink()
         delay_ms = int(delay * 1000)
         filters = [f"atempo={pitch}"]
         if delay_ms > 0:
@@ -1061,7 +1078,9 @@ def _generate_avatar_video(
         return None, None, "请先上传视频素材。"
 
     settings = Settings.load(Path(settings_path))
-    workdir = ensure_dir(settings.output_root / "manual_avatar" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    avatar_root = ensure_dir(settings.output_root / "manual_avatar")
+    workdir = ensure_dir(avatar_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(avatar_root, keep=3)
 
     audio_path: Path
     if current_audio:
@@ -1100,7 +1119,9 @@ def _insert_title_video(current_video: str | None, title: str, settings_path: st
         return None, None, "请先生成视频。"
     settings = Settings.load(Path(settings_path))
     pipeline = FFmpegPipeline(settings)
-    workdir = ensure_dir(settings.output_root / "manual_title" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    title_root = ensure_dir(settings.output_root / "manual_title")
+    workdir = ensure_dir(title_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(title_root, keep=3)
     final_video, cover = pipeline.add_title_and_cover(Path(current_video), title.strip() or "默认标题", workdir)
     return str(final_video), str(final_video), f"标题已插入，封面：{cover}"
 
@@ -1121,7 +1142,9 @@ def _insert_subtitle_video(
         return None, None, "请先生成视频。"
 
     settings = Settings.load(Path(settings_path))
-    workdir = ensure_dir(settings.output_root / "manual_subtitle" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    subtitle_root = ensure_dir(settings.output_root / "manual_subtitle")
+    workdir = ensure_dir(subtitle_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(subtitle_root, keep=3)
     duration = media_duration_seconds(Path(current_video), fallback=8.0)
     srt = workdir / "subtitle" / "manual.srt"
     srt.parent.mkdir(parents=True, exist_ok=True)
@@ -1160,7 +1183,9 @@ def _insert_bgm_video(
         return None, None, "请先生成视频。"
 
     settings = Settings.load(Path(settings_path))
-    workdir = ensure_dir(settings.output_root / "manual_bgm" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    bgm_root = ensure_dir(settings.output_root / "manual_bgm")
+    workdir = ensure_dir(bgm_root / datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    _cleanup_old_run_dirs(bgm_root, keep=3)
 
     bgm_file = Path(bgm_upload) if bgm_upload else Path(str(settings.section("bgm").get("default_bgm", "")).strip())
     if not str(bgm_file) or not bgm_file.exists():

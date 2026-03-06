@@ -14,6 +14,8 @@ class CosyVoiceTTS:
     def synthesize(self, rewritten_script: Path, voice_ref: str | None, workdir: Path) -> Path:
         cfg = self.settings.section("tts")
         audio_out = ensure_dir(workdir / "audio") / "tts.wav"
+        if audio_out.exists():
+            audio_out.unlink()
         text = read_text(rewritten_script).replace("\n", " ").strip()
         command_tmpl = str(cfg.get("command", "")).strip()
         if command_tmpl:
@@ -30,7 +32,7 @@ class CosyVoiceTTS:
                 text_q=shell_quote(text),
             )
             completed = run_local_command(cmd, check=False)
-            if audio_out.exists() and audio_out.stat().st_size > 0:
+            if completed.returncode == 0 and audio_out.exists() and audio_out.stat().st_size > 0:
                 return audio_out
             # If command exists but failed to produce output, surface real error for debugging.
             err = (completed.stderr or completed.stdout or "").strip()

@@ -5,6 +5,7 @@ import math
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -12,9 +13,13 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def run_cmd(cmd: str) -> int:
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    return proc.returncode
+def run_cmd(cmd: str) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    # Avoid Intel/OpenMP SHM issues on macOS and constrained environments.
+    env.setdefault("KMP_USE_SHM", "0")
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("KMP_AFFINITY", "disabled")
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env)
 
 
 def shell_quote(path_or_text: str | Path) -> str:
@@ -38,16 +43,33 @@ def main() -> int:
 
     cosy_cmd = os.environ.get("COSYVOICE_CMD", "").strip()
     model_dir = os.environ.get("COSYVOICE_MODEL_DIR", "").strip()
+    require_real_tts = bool(cosy_cmd) or bool(args.voice_ref and args.voice_ref != "__EMPTY__")
     if cosy_cmd:
+        text_raw = args.text
+        text_safe = text_raw.replace('"', '\\"')
         cmd = cosy_cmd.format(
             text_file=str(text_file),
             voice_ref=args.voice_ref,
             audio_out=str(audio_out),
-            text=args.text,
+            text=text_safe,
             model_dir=model_dir,
+            text_file_q=shell_quote(text_file),
+            voice_ref_q=shell_quote(args.voice_ref),
+            audio_out_q=shell_quote(audio_out),
+            text_q=shell_quote(text_raw),
+            model_dir_q=shell_quote(model_dir),
         )
-        if run_cmd(cmd) == 0 and audio_out.exists():
+        proc = run_cmd(cmd)
+        if proc.returncode == 0 and audio_out.exists():
             return 0
+        err = (proc.stderr or proc.stdout or "").strip()
+        if require_real_tts:
+            print(
+                "real tts failed; COSYVOICE_CMD execution error. "
+                f"detail: {err[:400]}",
+                file=sys.stderr,
+            )
+            return 9
 
     text = args.text.strip() or read_text(text_file).replace("\n", " ").strip()
     voice_hint = (args.voice_ref or "").lower()
@@ -62,7 +84,8 @@ def main() -> int:
         f"ffmpeg -y -f lavfi -i sine=frequency={freq}:sample_rate=24000:duration={duration} "
         f"-af volume=0.12 {shell_quote(audio_out)}"
     )
-    return run_cmd(ffmpeg)
+    proc = run_cmd(ffmpeg)
+    return proc.returncode
 
 
 if __name__ == "__main__":

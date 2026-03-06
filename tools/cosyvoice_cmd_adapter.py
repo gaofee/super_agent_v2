@@ -42,6 +42,14 @@ def main() -> int:
         print(f"model_dir not found: {repo_root}", file=sys.stderr)
         return 2
 
+    if sys.version_info >= (3, 12):
+        print(
+            "python version not supported for CosyVoice clone pipeline: "
+            f"{sys.version.split()[0]}. Please use Python 3.10/3.11 runtime.",
+            file=sys.stderr,
+        )
+        return 10
+
     model_dir = _pick_model_dir(repo_root)
     if model_dir is None:
         print(
@@ -95,4 +103,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

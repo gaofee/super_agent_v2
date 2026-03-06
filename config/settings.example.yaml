@@ -17,7 +17,7 @@ rewriter:
 
 tts:
   # 本地 TTS wrapper：可通过 COSYVOICE_CMD 接入真实命令，否则自动降级占位音频
-  command: "python tools/tts_wrapper.py --text-file {text_file} --voice-ref {voice_ref} --audio-out {audio_out} --text \"{text}\""
+  command: "python tools/tts_wrapper.py --text-file {text_file_q} --voice-ref {voice_ref_q} --audio-out {audio_out_q} --text {text_q}"
   # 预置音色：可填本地参考音频绝对路径；若不存在则使用 *_voice_token
   female_voice_ref: "local_models/cosyvoice/voices/female.wav"
   male_voice_ref: "local_models/cosyvoice/voices/male.wav"
@@ -26,7 +26,7 @@ tts:
 
 avatar:
   # 本地数字人 wrapper：可替换为真实 HeyGem 命令；默认输出占位口播视频
-  command: "python tools/avatar_wrapper.py --avatar-id {avatar_id} --audio-in {audio_in} --video-out {video_out} --source-video {source_video} --infer-batch {infer_batch} --infer-factor {infer_factor}"
+  command: "python tools/avatar_wrapper.py --avatar-id {avatar_id_q} --audio-in {audio_in_q} --video-out {video_out_q} --source-video {source_video_q} --infer-batch {infer_batch} --infer-factor {infer_factor}"
 
 video:
   subtitle_style: "FontName=PingFang SC,Fontsize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0"

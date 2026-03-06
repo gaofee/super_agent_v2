@@ -24,17 +24,27 @@ class HeyGemDriver:
         video_out = ensure_dir(workdir / "avatar") / "avatar_raw.mp4"
         if command:
             source_video_arg = source_video if source_video else "__EMPTY__"
-            run_local_command(
-                command.format(
-                    avatar_id=avatar_id,
-                    audio_in=audio_in,
-                    video_out=video_out,
-                    source_video=source_video_arg,
-                    infer_batch=infer_batch,
-                    infer_factor=infer_factor,
-                )
+            cmd = command.format(
+                avatar_id=avatar_id,
+                audio_in=audio_in,
+                video_out=video_out,
+                source_video=source_video_arg,
+                infer_batch=infer_batch,
+                infer_factor=infer_factor,
+                avatar_id_q=shell_quote(avatar_id),
+                audio_in_q=shell_quote(audio_in),
+                video_out_q=shell_quote(video_out),
+                source_video_q=shell_quote(source_video_arg),
             )
-            return video_out
+            completed = run_local_command(cmd, check=False)
+            if video_out.exists() and video_out.stat().st_size > 0:
+                return video_out
+            err = (completed.stderr or completed.stdout or "").strip()
+            if source_video:
+                raise RuntimeError(
+                    "HeyGem 数字人生成失败：未生成视频。"
+                    + (f" 详情: {err[:280]}" if err else "")
+                )
 
         # Local fallback: generate a simple talking-host placeholder video bound to audio duration.
         duration = media_duration_seconds(audio_in, fallback=8.0)

@@ -185,6 +185,7 @@ $env:HEYGEM_MODEL_DIR = "$env:LOCAL_MODEL_ROOT\heygem\HeyGem.ai-main"
 $env:SOCIAL_AUTO_UPLOAD_DIR = "$env:LOCAL_MODEL_ROOT\social-auto-upload-oh-v1.0"
 $env:DEEPSEEK_API_KEY = "your_deepseek_api_key"
 $env:DEEPSEEK_MODEL = "deepseek-chat"
+$env:YTDLP_COOKIES_FROM_BROWSER = "chrome"
 ```
 
 ---

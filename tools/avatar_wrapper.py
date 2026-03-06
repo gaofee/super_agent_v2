@@ -4,6 +4,7 @@ import argparse
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -28,9 +29,9 @@ def media_duration_seconds(media_file: Path, fallback: float = 8.0) -> float:
         return fallback
 
 
-def run_cmd(cmd: str) -> int:
+def run_cmd(cmd: str) -> subprocess.CompletedProcess:
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    return proc.returncode
+    return proc
 
 
 def shell_quote(path_or_text: str | Path) -> str:
@@ -66,10 +67,22 @@ def main() -> int:
             infer_batch=args.infer_batch,
             infer_factor=args.infer_factor,
             model_dir=heygem_model_dir,
+            avatar_id_q=shell_quote(args.avatar_id),
+            audio_in_q=shell_quote(audio_in),
+            video_out_q=shell_quote(video_out),
+            source_video_q=shell_quote(source_video),
+            model_dir_q=shell_quote(heygem_model_dir),
         )
-        ret = run_cmd(cmd)
-        if ret == 0 and video_out.exists():
+        proc = run_cmd(cmd)
+        if proc.returncode == 0 and video_out.exists():
             return 0
+        err = (proc.stderr or proc.stdout or "").strip()
+        print(
+            "avatar wrapper failed; HEYGEM_CMD execution error. "
+            f"detail: {err[:400]}",
+            file=sys.stderr,
+        )
+        return 9
 
     duration = media_duration_seconds(audio_in)
     if source_video and Path(source_video).exists():
@@ -80,7 +93,7 @@ def main() -> int:
             f"-vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920\" "
             f"-map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -shortest {shell_quote(video_out)}"
         )
-        return run_cmd(cmd)
+        return run_cmd(cmd).returncode
 
     cmd = (
         f"ffmpeg -y -f lavfi -i color=c=0x1e3a8a:s=1080x1920:r=25:d={duration} "
@@ -89,7 +102,7 @@ def main() -> int:
         f"drawbox=x=120:y=if(lt(mod(t\\,2)\\,1)\\,650\\,700):w=840:h=140:color=white@0.32:t=fill\" "
         f"-map 0:v -map 1:a -c:v libx264 -pix_fmt yuv420p -shortest {shell_quote(video_out)}"
     )
-    return run_cmd(cmd)
+    return run_cmd(cmd).returncode
 
 
 if __name__ == "__main__":

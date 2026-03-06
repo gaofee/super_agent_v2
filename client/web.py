@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+import html
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
+import urllib.parse
 import urllib.error
 import urllib.request
 
 from audio.tts.cosyvoice_tts import CosyVoiceTTS
+from audio.asr.whisper_asr import WhisperASR
 from avatar.heygem.driver import HeyGemDriver
 from core.config import Settings
 from core.env_loader import load_local_env
@@ -25,9 +28,700 @@ from workflow.pipeline import FullWorkflow
 load_local_env()
 
 
+def _coerce_upload_path(upload: object) -> str | None:
+    if upload is None:
+        return None
+    if isinstance(upload, str):
+        p = upload.strip()
+        return p if p else None
+    if isinstance(upload, dict):
+        for k in ("path", "name"):
+            v = upload.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    if isinstance(upload, list):
+        for item in upload:
+            p = _coerce_upload_path(item)
+            if p:
+                return p
+    return None
+
+
 def _extract_first_url(text: str) -> str:
     match = re.search(r"https?://[^\s，,。！!；;）)]+", text)
     return match.group(0) if match else text.strip()
+
+
+def _yt_dlp_base_cmd() -> str:
+    if shutil.which("yt-dlp") is not None:
+        return "yt-dlp"
+    if shutil.which("python") is not None:
+        return "python -m yt_dlp"
+    if shutil.which("python3") is not None:
+        return "python3 -m yt_dlp"
+    return ""
+
+
+def _yt_dlp_cookie_opts() -> str:
+    browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    if browser:
+        return f"--cookies-from-browser {shell_quote(browser)}"
+
+    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
+    if cookie_file:
+        return f"--cookies {shell_quote(cookie_file)}"
+
+    return ""
+
+
+def _browser_cookie_mode() -> str:
+    browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    if browser:
+        return browser
+    return ""
+
+
+def _http_get_json(url: str, timeout: int = 15) -> dict:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+
+def _browser_cookie_jar():
+    browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    if not browser:
+        return None
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser  # type: ignore
+
+        return extract_cookies_from_browser(browser, profile=None)
+    except Exception:
+        return None
+
+
+def _http_get_text(url: str, timeout: int = 15, *, use_browser_cookies: bool = False) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    if use_browser_cookies:
+        jar = _browser_cookie_jar()
+        if jar is not None:
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            with opener.open(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="ignore")
+
+
+def _resolve_redirect_url(url: str, timeout: int = 15) -> str:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.geturl() or url
+
+
+def _expand_douyin_short_url(url: str) -> str:
+    if "v.douyin.com/" not in url:
+        return url
+    # Try urllib redirect resolution first.
+    try:
+        final_url = _resolve_redirect_url(url, timeout=20)
+        if final_url and final_url != url:
+            return final_url
+    except Exception:
+        pass
+
+    # Fallback via curl effective URL (some environments behave differently).
+    cmd = (
+        "curl -Ls -o /dev/null -w '%{url_effective}' "
+        f"-A {shell_quote('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')} "
+        f"{shell_quote(url)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    final_url = (completed.stdout or "").strip()
+    if completed.returncode == 0 and final_url and final_url != url:
+        return final_url
+    return url
+
+
+def _extract_douyin_aweme_info(url: str) -> tuple[str, str]:
+    """
+    Return (description, play_url). Both may be empty when lookup fails.
+    """
+    try:
+        final_url = _expand_douyin_short_url(url)
+    except Exception:
+        final_url = url
+
+    aweme_id = ""
+    patterns = [
+        r"/video/(\d+)",
+        r"modal_id=(\d+)",
+        r"aweme_id=(\d+)",
+    ]
+    for p in patterns:
+        m = re.search(p, final_url)
+        if m:
+            aweme_id = m.group(1)
+            break
+    if not aweme_id:
+        m = re.search(r"(\d{15,22})", final_url)
+        if m:
+            aweme_id = m.group(1)
+    if not aweme_id:
+        return "", ""
+
+    api = f"https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={aweme_id}"
+    try:
+        data = _http_get_json(api)
+    except Exception:
+        data = {}
+
+    detail = {}
+    items = data.get("item_list") or []
+    if items and isinstance(items, list):
+        detail = items[0] or {}
+    def extract_from_detail(node: dict) -> tuple[str, str]:
+        d = str((node or {}).get("desc", "")).strip()
+        p = ""
+        video = (node or {}).get("video") or {}
+        play_addr = video.get("play_addr") or {}
+        urls = play_addr.get("url_list") or []
+        if urls and isinstance(urls, list):
+            p = str(urls[0]).strip()
+        return d, p
+
+    desc, play_url = extract_from_detail(detail)
+    if desc or play_url:
+        return desc, play_url
+
+    # Fallback: parse render data from Douyin web page.
+    try:
+        html = _http_get_text(final_url, timeout=20, use_browser_cookies=True)
+    except Exception:
+        try:
+            html = _http_get_text(final_url, timeout=20, use_browser_cookies=False)
+        except Exception:
+            return "", ""
+
+    render_match = re.search(r'<script id="RENDER_DATA" type="application/json">(.*?)</script>', html, re.S)
+    if not render_match:
+        render_match = re.search(r"<script id='RENDER_DATA' type='application/json'>(.*?)</script>", html, re.S)
+    raw = render_match.group(1) if render_match else ""
+    if not raw:
+        return "", ""
+    try:
+        payload = json.loads(urllib.parse.unquote(raw))
+    except Exception:
+        return "", ""
+
+    found_desc = ""
+    found_url = ""
+
+    def walk(node: object) -> None:
+        nonlocal found_desc, found_url
+        if found_url and found_desc:
+            return
+        if isinstance(node, dict):
+            if not found_desc:
+                d = str(node.get("desc", "")).strip()
+                if len(d) >= 2:
+                    found_desc = d
+            if not found_url:
+                video = node.get("video")
+                if isinstance(video, dict):
+                    play_addr = video.get("play_addr")
+                    if isinstance(play_addr, dict):
+                        urls = play_addr.get("url_list")
+                        if isinstance(urls, list) and urls:
+                            found_url = str(urls[0]).strip()
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for it in node:
+                walk(it)
+
+    walk(payload)
+    return found_desc, found_url
+
+
+def _extract_douyin_source_urls(url: str) -> list[str]:
+    try:
+        final_url = _expand_douyin_short_url(url)
+    except Exception:
+        final_url = url
+    try:
+        req = urllib.request.Request(
+            final_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            page = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    # Match inside xg-video-container -> video -> source.
+    # Try to keep extraction constrained to the player container first.
+    container_match = re.search(
+        r"<xg-video-container[^>]*>(.*?)</xg-video-container>",
+        page,
+        flags=re.I | re.S,
+    )
+    container_html = container_match.group(1) if container_match else page
+    video_match = re.search(r"<video[^>]*>(.*?)</video>", container_html, flags=re.I | re.S)
+    video_html = video_match.group(1) if video_match else container_html
+
+    raw_urls = re.findall(r"<source[^>]+src=[\"']([^\"']+)[\"']", video_html, flags=re.I)
+    urls: list[str] = []
+    for raw in raw_urls:
+        u = html.unescape(raw).strip()
+        if not u.startswith("http"):
+            continue
+        if "douyin" not in u and "douyinvod.com" not in u:
+            continue
+        if u not in urls:
+            urls.append(u)
+
+    # Fallback: parse full page text/script for direct media URLs (escaped/unescaped).
+    if not urls:
+        page_unescaped = html.unescape(page).replace("\\/", "/")
+        pattern_list = [
+            r"https?://[^\s\"'<>]+douyinvod\.com[^\s\"'<>]+",
+            r"https?://[^\s\"'<>]+/aweme/v1/play/\?[^\s\"'<>]+",
+        ]
+        for pattern in pattern_list:
+            for m in re.findall(pattern, page_unescaped, flags=re.I):
+                u = m.strip()
+                if u.startswith("http") and u not in urls:
+                    urls.append(u)
+
+    # Follow user rule: prefer source #2, then #3, then #4, finally fallback to #1.
+    # 0-based: [1,2,3,0]
+    if len(urls) >= 2:
+        ordered: list[str] = []
+        for idx in [1, 2, 3, 0]:
+            if 0 <= idx < len(urls) and urls[idx] not in ordered:
+                ordered.append(urls[idx])
+        return ordered
+    return urls
+
+
+def _extract_douyin_source_urls_via_playwright(url: str) -> list[str]:
+    """
+    Parse rendered DOM via Playwright and extract source URLs from:
+    xg-video-container > video > source[src]
+    """
+    py = shutil.which("python3") or shutil.which("python")
+    if not py:
+        return []
+    script = r"""
+import json, sys
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    print("[]")
+    raise SystemExit(0)
+
+url = sys.argv[1]
+browser_cookie = (sys.argv[2] if len(sys.argv) > 2 else "").strip()
+ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+urls = []
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=ua)
+        if browser_cookie:
+            try:
+                from yt_dlp.cookies import extract_cookies_from_browser
+                jar = extract_cookies_from_browser(browser_cookie, profile='Default')
+                cookies = []
+                for c in jar:
+                    if 'douyin' not in c.domain and 'iesdouyin' not in c.domain:
+                        continue
+                    cookies.append({
+                        'name': c.name,
+                        'value': c.value,
+                        'domain': c.domain,
+                        'path': c.path or '/',
+                        'secure': bool(c.secure),
+                        'httpOnly': False,
+                    })
+                if cookies:
+                    context.add_cookies(cookies)
+            except Exception:
+                pass
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(3500)
+        handles = page.query_selector_all("xg-video-container video source[src]")
+        if not handles:
+            handles = page.query_selector_all("video source[src]")
+        for h in handles:
+            src = (h.get_attribute("src") or "").strip()
+            if src and src.startswith("http"):
+                urls.append(src)
+        browser.close()
+except Exception:
+    pass
+print(json.dumps(urls, ensure_ascii=False))
+"""
+    browser_cookie = _browser_cookie_mode()
+    cmd = f"{shell_quote(py)} -c {shell_quote(script)} {shell_quote(url)} {shell_quote(browser_cookie)}"
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode != 0:
+        return []
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    cleaned: list[str] = []
+    for item in parsed:
+        u = str(item).strip()
+        if u.startswith("http") and u not in cleaned:
+            cleaned.append(u)
+    if len(cleaned) >= 2:
+        ordered: list[str] = []
+        for idx in [1, 2, 3, 0]:
+            if 0 <= idx < len(cleaned) and cleaned[idx] not in ordered:
+                ordered.append(cleaned[idx])
+        return ordered
+    return cleaned
+
+
+def _extract_douyin_media_urls_via_playwright_network(url: str) -> tuple[list[str], str]:
+    """
+    Capture media URLs from rendered page network requests/responses.
+    """
+    py = shutil.which("python3") or shutil.which("python")
+    if not py:
+        return [], "playwright-net: no python runtime"
+    script = r"""
+import json, re, sys
+diag = []
+result = []
+try:
+    from playwright.sync_api import sync_playwright
+except Exception as e:
+    print(json.dumps({"urls": [], "diag": f"playwright import failed: {e}"}, ensure_ascii=False))
+    raise SystemExit(0)
+
+url = sys.argv[1]
+browser_cookie = (sys.argv[2] if len(sys.argv) > 2 else "").strip()
+ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=True)
+        context = browser.new_context(user_agent=ua)
+        if browser_cookie:
+            try:
+                from yt_dlp.cookies import extract_cookies_from_browser
+                jar = extract_cookies_from_browser(browser_cookie, profile='Default')
+                cookies = []
+                for c in jar:
+                    if 'douyin' not in c.domain and 'iesdouyin' not in c.domain:
+                        continue
+                    cookies.append({
+                        'name': c.name,
+                        'value': c.value,
+                        'domain': c.domain,
+                        'path': c.path or '/',
+                        'secure': bool(c.secure),
+                        'httpOnly': False,
+                    })
+                if cookies:
+                    context.add_cookies(cookies)
+                    diag.append(f"cookie_injected={len(cookies)}")
+            except Exception as e:
+                diag.append(f"cookie_inject_failed={e}")
+        page = context.new_page()
+        seen = set()
+
+        def collect(u: str):
+            if not u or not u.startswith("http"):
+                return
+            ul = u.lower()
+            if ("douyinvod.com" in ul) or ("/aweme/v1/play/" in ul):
+                if u not in seen:
+                    seen.add(u)
+                    result.append(u)
+
+        page.on("request", lambda req: collect(req.url))
+        page.on("response", lambda resp: collect(resp.url))
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(6000)
+
+        # Try to trigger play action once.
+        for selector in ["xg-start", ".xgplayer-start", "video"]:
+            try:
+                el = page.query_selector(selector)
+                if el:
+                    el.click(timeout=1200)
+                    page.wait_for_timeout(1800)
+                    break
+            except Exception:
+                continue
+
+        # Parse rendered HTML as fallback.
+        html = page.content()
+        dom_urls = re.findall(r'<source[^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
+        for u in dom_urls:
+            collect(u)
+
+        browser.close()
+        diag.append(f"captured={len(result)}")
+except Exception as e:
+    diag.append(f"playwright run failed: {e}")
+
+print(json.dumps({"urls": result, "diag": "; ".join(diag)}, ensure_ascii=False))
+"""
+    browser_cookie = _browser_cookie_mode()
+    cmd = f"{shell_quote(py)} -c {shell_quote(script)} {shell_quote(url)} {shell_quote(browser_cookie)}"
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        return [], f"playwright-net cmd failed: {stderr[:160]}"
+    raw = (completed.stdout or "").strip()
+    if not raw:
+        return [], "playwright-net empty output"
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return [], f"playwright-net invalid json: {raw[:120]}"
+    urls = parsed.get("urls") if isinstance(parsed, dict) else []
+    diag = str(parsed.get("diag", "")).strip() if isinstance(parsed, dict) else ""
+    if not isinstance(urls, list):
+        return [], f"playwright-net bad urls type; {diag}"
+    cleaned: list[str] = []
+    for item in urls:
+        u = str(item).strip()
+        if u.startswith("http") and u not in cleaned:
+            cleaned.append(u)
+    # Ignore common anti-bot closure noise, keep diagnostics actionable.
+    noisy_tokens = ("Target page, context or browser has been closed", "Browser logs:")
+    if any(tok in diag for tok in noisy_tokens):
+        diag = "playwright-net blocked by site anti-bot"
+
+    if len(cleaned) >= 2:
+        ordered: list[str] = []
+        for idx in [1, 2, 3, 0]:
+            if 0 <= idx < len(cleaned) and cleaned[idx] not in ordered:
+                ordered.append(cleaned[idx])
+        return ordered, diag
+    return cleaned, diag
+
+
+def _download_from_media_url(media_url: str, output_file: Path) -> bool:
+    if not media_url:
+        return False
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    cmd = (
+        f"ffmpeg -y -user_agent {shell_quote(ua)} -i {shell_quote(media_url)} "
+        f"-c copy {shell_quote(output_file)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    return completed.returncode == 0 and output_file.exists() and output_file.stat().st_size > 0
+
+
+def _extract_script_by_remote_media_asr(media_url: str, settings: Settings, workdir: Path) -> str:
+    if not media_url:
+        return ""
+    audio_path = ensure_dir(workdir / "audio_probe") / "remote_stream.wav"
+    ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    cmd = (
+        f"ffmpeg -y -user_agent {shell_quote(ua)} -i {shell_quote(media_url)} "
+        f"-vn -acodec pcm_s16le -ar 16000 -ac 1 {shell_quote(audio_path)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode != 0 or not audio_path.exists():
+        return ""
+    asr = WhisperASR(settings)
+    text, _segments = asr.transcribe(audio_path, workdir)
+    return text.strip()
+
+
+def _extract_script_by_yt_dlp_subtitle(
+    url: str,
+    settings: Settings,
+    workdir: Path,
+) -> str:
+    base = _yt_dlp_base_cmd()
+    if not base:
+        return ""
+    subtitle_dir = ensure_dir(workdir / "subtitle_probe")
+    out_template = subtitle_dir / "cap.%(ext)s"
+    cookie_opts = _yt_dlp_cookie_opts()
+    extra_args = os.getenv("YTDLP_EXTRA_ARGS", "").strip()
+    # Do not download media file, only try subtitle assets.
+    cmd = (
+        f"{base} {cookie_opts} {extra_args} --skip-download --write-auto-sub --write-sub "
+        f"--sub-langs \"zh-CN,zh-Hans,zh,all\" --sub-format \"vtt/srt\" "
+        f"-o {shell_quote(out_template)} {shell_quote(url)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode != 0:
+        return ""
+    subtitle_files = sorted(subtitle_dir.glob("cap*.vtt")) + sorted(subtitle_dir.glob("cap*.srt"))
+    if not subtitle_files:
+        return ""
+    content = subtitle_files[0].read_text(encoding="utf-8", errors="ignore")
+    lines: list[str] = []
+    for line in content.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        if "-->" in t:
+            continue
+        if t.upper().startswith("WEBVTT"):
+            continue
+        if re.fullmatch(r"\d+", t):
+            continue
+        if t.startswith("NOTE"):
+            continue
+        t = re.sub(r"<[^>]+>", "", t).strip()
+        if not t:
+            continue
+        lines.append(t)
+    merged = " ".join(lines)
+    merged = re.sub(r"\s+", " ", merged).strip()
+    return merged if len(merged) >= 12 else ""
+
+
+def _extract_script_by_yt_dlp_audio_asr(
+    url: str,
+    settings: Settings,
+    workdir: Path,
+) -> str:
+    base = _yt_dlp_base_cmd()
+    if not base:
+        return ""
+    audio_path = ensure_dir(workdir / "audio_probe") / "stream.wav"
+    cookie_opts = _yt_dlp_cookie_opts()
+    extra_args = os.getenv("YTDLP_EXTRA_ARGS", "").strip()
+    cmd = (
+        f"{base} {cookie_opts} {extra_args} -f bestaudio -o - {shell_quote(url)} "
+        f"| ffmpeg -y -i pipe:0 -vn -acodec pcm_s16le -ar 16000 -ac 1 {shell_quote(audio_path)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode != 0 or not audio_path.exists():
+        return ""
+    asr = WhisperASR(settings)
+    text, _segments = asr.transcribe(audio_path, workdir)
+    return text.strip()
+
+
+def _extract_copy_from_url_no_cookie(video_url: str, settings: Settings, workdir: Path) -> tuple[str, str]:
+    """
+    Try to extract spoken script directly from a public URL without login cookies.
+    Returns (script, diagnostic).
+    """
+    url = _extract_first_url(video_url)
+    if not url:
+        return "", "未检测到有效视频链接。"
+    url = _expand_douyin_short_url(url)
+
+    # Path 1: aweme/web parse -> remote media ASR
+    diag_parts: list[str] = [f"url={url}"]
+    if "douyin.com" in url:
+        desc, play_url = _extract_douyin_aweme_info(url)
+        if play_url:
+            script = _extract_script_by_remote_media_asr(play_url, settings, workdir).strip()
+            if len(script) >= 10:
+                return script, "直链ASR成功（aweme/play_url）"
+            diag_parts.append("aweme.play_url_asr=empty")
+        else:
+            diag_parts.append(f"aweme.play_url=none(desc_len={len(desc)})")
+
+        # Path 2: HTML source -> remote media ASR
+        source_urls = _extract_douyin_source_urls(url)
+        if source_urls:
+            for i, media_url in enumerate(source_urls, start=1):
+                script = _extract_script_by_remote_media_asr(media_url, settings, workdir).strip()
+                if len(script) >= 10:
+                    return script, f"直链ASR成功（html source#{i}）"
+            diag_parts.append(f"html.source_count={len(source_urls)}")
+        else:
+            diag_parts.append("html.source=none")
+
+        # Path 3: rendered DOM source -> remote media ASR
+        dom_urls = _extract_douyin_source_urls_via_playwright(url)
+        if dom_urls:
+            for i, media_url in enumerate(dom_urls, start=1):
+                script = _extract_script_by_remote_media_asr(media_url, settings, workdir).strip()
+                if len(script) >= 10:
+                    return script, f"直链ASR成功（playwright-dom source#{i}）"
+            diag_parts.append(f"playwright_dom.source_count={len(dom_urls)}")
+        else:
+            diag_parts.append("playwright_dom.source=none")
+
+        # Path 4: rendered network media URL -> remote media ASR
+        net_urls, net_diag = _extract_douyin_media_urls_via_playwright_network(url)
+        if net_urls:
+            for i, media_url in enumerate(net_urls, start=1):
+                script = _extract_script_by_remote_media_asr(media_url, settings, workdir).strip()
+                if len(script) >= 10:
+                    return script, f"直链ASR成功（playwright-net media#{i}）"
+            diag_parts.append(f"playwright_net.media_count={len(net_urls)}")
+        else:
+            diag_parts.append("playwright_net.media=none")
+        if net_diag:
+            diag_parts.append(net_diag)
+
+    cookie_mode = bool(_yt_dlp_cookie_opts())
+
+    # Path 5: subtitle only (no media download file), may work on some public links
+    subtitle_script = _extract_script_by_yt_dlp_subtitle(url, settings, workdir).strip()
+    if len(subtitle_script) >= 10:
+        mode = "cookie" if cookie_mode else "no-cookie"
+        return subtitle_script, f"字幕提取成功（yt-dlp subtitle, {mode}）"
+    diag_parts.append(f"yt_dlp.subtitle={'cookie' if cookie_mode else 'no-cookie'}=empty")
+
+    # Path 6: yt-dlp audio pipe ASR (best effort no-cookie)
+    audio_script = _extract_script_by_yt_dlp_audio_asr(url, settings, workdir).strip()
+    if len(audio_script) >= 10:
+        mode = "cookie" if cookie_mode else "no-cookie"
+        return audio_script, f"音频流ASR成功（yt-dlp pipe, {mode}）"
+    diag_parts.append(f"yt_dlp.audio_asr={'cookie' if cookie_mode else 'no-cookie'}=empty")
+
+    return "", "；".join(diag_parts)
 
 
 def _split_sentences(text: str, max_chars: int = 18) -> list[str]:
@@ -114,11 +808,30 @@ def _deepseek_title_tags(script_text: str) -> tuple[str, str, str, str] | None:
         return None
 
 
-def _resolve_voice_ref(settings: Settings, ref_voice: str, voice_upload: str | None) -> tuple[str | None, str | None]:
+def _prepare_reference_audio(path_like: str | None, workdir: Path) -> str | None:
+    if not path_like:
+        return None
+    src = Path(path_like)
+    if not src.exists():
+        return None
+    # Normalize to wav/16k/mono for better compatibility with local TTS wrappers.
+    normalized = ensure_dir(workdir / "ref_audio") / "voice_ref.wav"
+    cmd = (
+        f"ffmpeg -y -i {shell_quote(src)} -acodec pcm_s16le -ar 16000 -ac 1 "
+        f"{shell_quote(normalized)}"
+    )
+    completed = run_local_command(cmd, check=False)
+    if completed.returncode == 0 and normalized.exists() and normalized.stat().st_size > 0:
+        return str(normalized)
+    return str(src)
+
+
+def _resolve_voice_ref(settings: Settings, ref_voice: str, voice_upload: object) -> tuple[str | None, str | None]:
     tts_cfg = settings.section("tts")
     if ref_voice == "自己声音":
-        if voice_upload:
-            return str(Path(voice_upload)), None
+        upload_path = _coerce_upload_path(voice_upload)
+        if upload_path:
+            return str(Path(upload_path)), None
         return None, "请选择“自己声音”时上传参考音频。"
 
     if ref_voice == "标准女声":
@@ -135,8 +848,12 @@ def _resolve_voice_ref(settings: Settings, ref_voice: str, voice_upload: str | N
     return None, f"{ref_voice}未配置，请在 settings.yaml 的 tts 段配置对应音色。"
 
 
-def _download_video(video_url: str, settings_path: str) -> tuple[str | None, str | None, str, str | None]:
+def _download_video(
+    video_url: str,
+    settings_path: str,
+) -> tuple[str | None, str | None, str, str | None]:
     url = _extract_first_url(video_url)
+    url = _expand_douyin_short_url(url)
     if not url:
         return None, None, "请输入视频 URL。", None
 
@@ -144,20 +861,77 @@ def _download_video(video_url: str, settings_path: str) -> tuple[str | None, str
     output_root = ensure_dir(settings.output_root / "downloads")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_template = output_root / f"source_{stamp}.%(ext)s"
+    direct_mp4 = output_root / f"source_{stamp}.mp4"
+
+    # No-cookie technical path 1: resolve play_url from aweme/web data.
+    douyin_diag = ""
+    if "douyin.com" in url:
+        desc, play_url = _extract_douyin_aweme_info(url)
+        if not play_url:
+            douyin_diag = f"aweme 解析失败（desc_len={len(desc)}）"
+        if play_url and _download_from_media_url(play_url, direct_mp4):
+            video_path = str(direct_mp4.resolve())
+            return video_path, video_path, f"下载完成（无 Cookie 直链）：{video_path}", video_path
+        if play_url:
+            douyin_diag = "aweme 解析成功但直链下载失败"
+
+        # No-cookie technical path 2: parse <video><source src=...> URLs from page HTML.
+        source_urls = _extract_douyin_source_urls(url)
+        source_from = "html"
+        playwright_net_diag = ""
+        if not source_urls:
+            source_urls = _extract_douyin_source_urls_via_playwright(url)
+            source_from = "playwright-dom"
+        if not source_urls:
+            source_urls, playwright_net_diag = _extract_douyin_media_urls_via_playwright_network(url)
+            source_from = "playwright-net"
+        if source_urls:
+            for idx, source_url in enumerate(source_urls):
+                if _download_from_media_url(source_url, direct_mp4):
+                    video_path = str(direct_mp4.resolve())
+                    return (
+                        video_path,
+                        video_path,
+                        f"下载完成（source 标签直链#{idx + 1}, {source_from}）：{video_path}",
+                        video_path,
+                    )
+            douyin_diag += f"；source({source_from}) 解析到{len(source_urls)}条但均下载失败"
+            if playwright_net_diag:
+                douyin_diag += f"；{playwright_net_diag}"
+        else:
+            douyin_diag += "；source 标签未解析到可用链接（html+playwright）"
+            if playwright_net_diag:
+                douyin_diag += f"；{playwright_net_diag}"
 
     if shutil.which("yt-dlp") is not None:
-        cmd = f"yt-dlp -o {shell_quote(out_template)} {shell_quote(url)}"
+        base = "yt-dlp"
     elif shutil.which("python") is not None:
-        cmd = f"python -m yt_dlp -o {shell_quote(out_template)} {shell_quote(url)}"
+        base = "python -m yt_dlp"
     elif shutil.which("python3") is not None:
-        cmd = f"python3 -m yt_dlp -o {shell_quote(out_template)} {shell_quote(url)}"
+        base = "python3 -m yt_dlp"
     else:
         return None, None, "下载失败：未找到 yt-dlp 或可用 Python。", None
 
+    cookie_opts = _yt_dlp_cookie_opts()
+    extra_args = os.getenv("YTDLP_EXTRA_ARGS", "").strip()
+    cmd = f"{base} {cookie_opts} {extra_args} -o {shell_quote(out_template)} {shell_quote(url)}".strip()
     completed = run_local_command(cmd, check=False)
     if completed.returncode != 0:
         reason = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-        return None, None, f"下载失败：{reason[:320]}", None
+        # Keep error concise and avoid dumping large browser launch logs in UI.
+        reason = reason.split("Browser logs:")[0].strip()
+        diag = f"；抖音直链诊断：{douyin_diag}" if douyin_diag else ""
+        mode = "浏览器 Cookie" if cookie_opts else "无 Cookie"
+        return (
+            None,
+            None,
+            (
+                f"下载失败：该链接当前无法在{mode}模式下载（{reason[:180]}）{diag}\n"
+                "请先点击“提取视频文案”（已支持直提）；"
+                "若仍失败，再上传本地视频提取。"
+            ),
+            None,
+        )
 
     video_files = sorted(output_root.glob(f"source_{stamp}.*"))
     if not video_files:
@@ -167,15 +941,32 @@ def _download_video(video_url: str, settings_path: str) -> tuple[str | None, str
     return video_path, video_path, f"下载完成：{video_path}（识别链接：{url}）", video_path
 
 
-def _extract_copy(material_video: str | None, settings_path: str) -> str:
-    if not material_video:
-        return "请先上传或下载视频素材。"
-
+def _extract_copy(
+    video_url: str,
+    material_video: object,
+    settings_path: str,
+) -> str:
     settings = Settings.load(Path(settings_path))
-    extractor = ScriptExtractor(settings)
     workdir = ensure_dir(settings.output_root / "manual_extract" / datetime.now().strftime("%Y%m%d_%H%M%S"))
-    transcript_path, _segments = extractor.extract(Path(material_video), workdir)
-    return transcript_path.read_text(encoding="utf-8").strip()
+
+    material_path = _coerce_upload_path(material_video)
+    if material_path:
+        extractor = ScriptExtractor(settings)
+        transcript_path, _segments = extractor.extract(Path(material_path), workdir)
+        return transcript_path.read_text(encoding="utf-8").strip()
+
+    # No local file: try extracting script directly from link without login cookies.
+    if video_url.strip():
+        script, diag = _extract_copy_from_url_no_cookie(video_url, settings, workdir)
+        if script:
+            return script
+        return (
+            "提取失败：当前链接在无登录模式下未拿到可转写媒体。\n"
+            "请上传本地视频后再次点击“提取视频文案”。\n"
+            f"诊断：{diag}"
+        )
+
+    return "请先输入视频链接，或上传本地视频素材。"
 
 
 def _rewrite_copy(source_text: str, language: str, model_name: str, settings_path: str) -> str:
@@ -210,7 +1001,7 @@ def _translate_copy(text: str, language: str) -> str:
 
 def _tts_from_rewrite(
     rewritten_text: str,
-    voice_upload: str | None,
+    voice_upload: object,
     settings_path: str,
     ref_voice: str,
     pitch: float,
@@ -227,10 +1018,14 @@ def _tts_from_rewrite(
 
     tts = CosyVoiceTTS(settings)
     workdir = ensure_dir(settings.output_root / "manual_tts" / datetime.now().strftime("%Y%m%d_%H%M%S"))
+    voice_ref = _prepare_reference_audio(voice_ref, workdir) if voice_ref else None
     text_path = workdir / "script" / "rewritten.txt"
     text_path.parent.mkdir(parents=True, exist_ok=True)
     text_path.write_text(text, encoding="utf-8")
-    raw_audio = tts.synthesize(text_path, voice_ref, workdir)
+    try:
+        raw_audio = tts.synthesize(text_path, voice_ref, workdir)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"音频生成失败：{str(exc)}", None
 
     adjusted_audio = raw_audio
     if abs(pitch - 1.0) > 1e-6 or delay > 1e-6:
@@ -251,17 +1046,18 @@ def _tts_from_rewrite(
 
 
 def _generate_avatar_video(
-    material_video: str | None,
+    material_video: object,
     material_select: str,
     rewritten_text: str,
-    voice_upload: str | None,
+    voice_upload: object,
     ref_voice: str,
     settings_path: str,
     infer_batch: float,
     infer_factor: float,
     current_audio: str | None,
 ) -> tuple[str | None, str | None, str]:
-    if not material_video:
+    material_path = _coerce_upload_path(material_video)
+    if not material_path:
         return None, None, "请先上传视频素材。"
 
     settings = Settings.load(Path(settings_path))
@@ -275,18 +1071,22 @@ def _generate_avatar_video(
         if voice_err:
             return None, None, voice_err
         tts = CosyVoiceTTS(settings)
+        voice_ref = _prepare_reference_audio(voice_ref, workdir) if voice_ref else None
         text = rewritten_text.strip() or "这是自动生成的口播内容。"
         text_path = workdir / "script" / "rewritten.txt"
         text_path.parent.mkdir(parents=True, exist_ok=True)
         text_path.write_text(text, encoding="utf-8")
-        audio_path = tts.synthesize(text_path, voice_ref, workdir)
+        try:
+            audio_path = tts.synthesize(text_path, voice_ref, workdir)
+        except Exception as exc:  # noqa: BLE001
+            return None, None, f"数字人前置音频生成失败：{str(exc)}"
 
     driver = HeyGemDriver(settings)
     avatar_video = driver.generate(
         avatar_id="host_a",
         audio_in=audio_path,
         workdir=workdir,
-        source_video=Path(material_video),
+        source_video=Path(material_path),
         infer_batch=int(infer_batch),
         infer_factor=float(infer_factor),
     )
@@ -399,18 +1199,20 @@ def _gen_title_tags(script_text: str) -> tuple[str, str, str, str]:
     return main_title, sub_title, hot_title, tags
 
 
-def _preview_video(uploaded_video: str | None) -> tuple[str | None, str | None]:
-    return uploaded_video, uploaded_video
+def _preview_video(uploaded_video: object) -> tuple[str | None, str | None]:
+    p = _coerce_upload_path(uploaded_video)
+    return p, p
 
 
-def _copy_audio_preview(uploaded_audio: str | None) -> tuple[str | None, str | None]:
-    return uploaded_audio, uploaded_audio
+def _copy_audio_preview(uploaded_audio: object) -> tuple[str | None, str | None]:
+    p = _coerce_upload_path(uploaded_audio)
+    return p, p
 
 
 def _publish(
     current_video: str | None,
     material_video: str | None,
-    voice_upload: str | None,
+    voice_upload: object,
     rewritten_text: str,
     settings_path: str,
     platforms: list[str] | str | None,
@@ -440,11 +1242,12 @@ def _publish(
         return "", "", "", "请先上传视频素材。", "等待发布", None
 
     flow = FullWorkflow(settings)
+    voice_path = _coerce_upload_path(voice_upload)
     result = flow.run(
         WorkflowInput(
             input_video=Path(material_video),
             avatar_id="host_a",
-            voice_ref=Path(voice_upload) if voice_upload else None,
+            voice_ref=Path(voice_path) if voice_path else None,
             avatar_source_video=Path(material_video),
             infer_batch=int(infer_batch),
             infer_factor=float(infer_factor),
@@ -528,13 +1331,13 @@ def run() -> None:
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;800&display=swap');
 
     :root {
-      --bg-a: #98b4e6;
-      --bg-b: #b6bce8;
-      --bg-c: #c7b6e8;
-      --card-bg: #f4f5f7;
-      --card-border: #dde2ec;
-      --button-a: #3e83f3;
-      --button-b: #7955ea;
+      --bg-a: #0a4ea9;
+      --bg-b: #1678cf;
+      --bg-c: #39b6ee;
+      --card-bg: rgba(241, 249, 255, 0.88);
+      --card-border: rgba(182, 218, 245, 0.95);
+      --button-a: #0ea5e9;
+      --button-b: #2563eb;
       --panel-height: 1160px;
       --col-width: 324px;
       --gap: 10px;
@@ -542,7 +1345,9 @@ def run() -> None:
     }
 
     html, body {
-      background: linear-gradient(180deg, var(--bg-a) 0%, var(--bg-b) 57%, var(--bg-c) 100%);
+      background: radial-gradient(circle at 14% 10%, rgba(129, 232, 255, 0.45) 0%, transparent 30%),
+                  radial-gradient(circle at 88% 12%, rgba(147, 197, 253, 0.35) 0%, transparent 36%),
+                  linear-gradient(160deg, var(--bg-a) 0%, var(--bg-b) 52%, var(--bg-c) 100%);
     }
 
     .gradio-container {
@@ -568,19 +1373,21 @@ def run() -> None:
     }
     .brand {
       margin: 0;
-      color: #1e2638;
+      color: #eef8ff;
       font-size: 54px;
       line-height: 1;
       font-weight: 800;
       letter-spacing: 0;
+      text-shadow: 0 8px 30px rgba(8, 54, 122, 0.45);
     }
-    .brand .accent { color: #6a50f2; }
+    .brand .accent { color: #7de3ff; }
     .subtitle {
       margin-top: 8px;
       font-size: 31px;
-      color: #3f4b61;
-      font-weight: 600;
+      color: #def2ff;
+      font-weight: 700;
       line-height: 1.1;
+      text-shadow: 0 4px 14px rgba(8, 54, 122, 0.35);
     }
     .window-tools {
       position: absolute;
@@ -629,7 +1436,8 @@ def run() -> None:
       border: 1px solid var(--card-border);
       border-radius: 12px;
       padding: 10px;
-      box-shadow: 0 8px 20px rgba(100,116,152,.14), inset 0 1px 0 rgba(255,255,255,.9);
+      box-shadow: 0 10px 26px rgba(1, 52, 120, 0.2), inset 0 1px 0 rgba(255,255,255,.92);
+      backdrop-filter: blur(7px);
       overflow: visible !important;
       display: flex;
       flex-direction: column;
@@ -646,7 +1454,7 @@ def run() -> None:
       display: flex;
       align-items: center;
       justify-content: center;
-      border-bottom: 1px solid #e5e9f1;
+      border-bottom: 1px solid #d7ebfc;
       margin-bottom: 8px;
       position: relative;
       flex: 0 0 auto;
@@ -657,13 +1465,13 @@ def run() -> None:
       top: 0;
       width: 124px;
       height: 36px;
-      background: #e9eef9;
+      background: linear-gradient(180deg, rgba(208, 240, 255, 0.9), rgba(191, 230, 252, 0.8));
       clip-path: polygon(10% 0, 90% 0, 80% 100%, 20% 100%);
       z-index: 0;
     }
     .module-head span {
       z-index: 1;
-      color: #4c71e4;
+      color: #1a5fa8;
       font-size: 15px;
       font-weight: 800;
       line-height: 1;
@@ -675,7 +1483,7 @@ def run() -> None:
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      color: #7f8896;
+      color: #4d6688;
       font-size: 13px;
       font-weight: 700;
       z-index: 2;
@@ -688,7 +1496,7 @@ def run() -> None:
       background: linear-gradient(180deg, #2784ff, #8f4dff);
       display: inline-block;
     }
-    .module-no b { font-size: 18px; color: #8d95a3; }
+    .module-no b { font-size: 18px; color: #4f6f99; }
 
     .gr-form, .gr-box, .gr-group { border-color: #dbe2ee !important; border-radius: 8px !important; }
     .module-card .gr-group,
@@ -706,7 +1514,7 @@ def run() -> None:
     }
     .gr-form label, .gr-block label, .gradio-container label {
       font-size: 11px !important;
-      color: #566176 !important;
+      color: #35577a !important;
       line-height: 1.2 !important;
       margin-bottom: 3px !important;
     }
@@ -714,14 +1522,15 @@ def run() -> None:
     .gr-textbox textarea, .gr-textbox input, .gr-dropdown input, .gr-number input {
       min-height: 36px !important;
       font-size: 14px !important;
-      color: #3a4255 !important;
+      color: #20496d !important;
+      background: rgba(255,255,255,.92) !important;
     }
     .gr-textbox textarea {
       line-height: 1.44;
       resize: none !important;
       overflow-y: hidden !important;
     }
-    .muted { color: #6c7688; font-size: 12px; margin-top: 0; margin-bottom: 3px; }
+    .muted { color: #4c6f90; font-size: 12px; margin-top: 0; margin-bottom: 3px; }
 
     .btn-main button,
     .btn-main > button {
@@ -732,7 +1541,7 @@ def run() -> None:
       font-size: 15px !important;
       font-weight: 700 !important;
       min-height: 38px !important;
-      box-shadow: 0 6px 14px rgba(56,105,214,.2);
+      box-shadow: 0 10px 18px rgba(7, 72, 160, 0.26);
     }
     .btn-main button:hover,
     .btn-main > button:hover { filter: brightness(1.04); }
@@ -743,15 +1552,15 @@ def run() -> None:
       min-height: 210px !important;
     }
     .gradio-container .gr-file button {
-      background: #f2f5fb !important;
-      color: #4e5a71 !important;
-      border: 1px solid #d5ddea !important;
+      background: rgba(222, 243, 255, 0.85) !important;
+      color: #1f5888 !important;
+      border: 1px solid #add7f5 !important;
       box-shadow: none !important;
     }
     .gradio-container .gr-file {
       border-style: dashed !important;
-      border-color: #cfd7e6 !important;
-      background: #f6f8fc !important;
+      border-color: #b7d9f1 !important;
+      background: rgba(227, 246, 255, 0.72) !important;
     }
     .gradio-container .gr-colorpicker button {
       background: transparent !important;
@@ -768,8 +1577,8 @@ def run() -> None:
     }
 
     .preview-short, .preview-tall {
-      background: #eceff4;
-      border: 1px solid #dfe3eb;
+      background: rgba(230, 246, 255, 0.88);
+      border: 1px solid #c4e2f7;
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -817,9 +1626,9 @@ def run() -> None:
     }
     .preview-short .empty,
     .preview-tall .empty {
-      color: #9ca5b4 !important;
+      color: #5d7c9a !important;
       font-size: 13px !important;
-      background: #eceff4 !important;
+      background: rgba(230, 246, 255, 0.88) !important;
     }
     .audio-preview audio { width: 100%; min-height: 56px; }
     .gradio-container .gradio-radio .wrap {
@@ -838,10 +1647,11 @@ def run() -> None:
 
     .footer-panel {
       margin-top: 8px;
-      background: rgba(246,248,252,.84);
-      border: 1px solid #dbe2ee;
+      background: rgba(232, 247, 255, .78);
+      border: 1px solid #bbdaf2;
       border-radius: 12px;
       padding: 10px;
+      backdrop-filter: blur(6px);
     }
     .status-box {
       font-size: 12px;
@@ -990,7 +1800,7 @@ def run() -> None:
             inputs=[video_url, settings_path],
             outputs=[material_video, video_preview_01, final_status, current_video_state],
         )
-        extract_btn.click(fn=_extract_copy, inputs=[material_video, settings_path], outputs=[script_text])
+        extract_btn.click(fn=_extract_copy, inputs=[video_url, material_video, settings_path], outputs=[script_text])
         rewrite_btn.click(fn=_rewrite_copy, inputs=[script_text, language, llm_model, settings_path], outputs=[rewritten_text])
         translate_btn.click(fn=_translate_copy, inputs=[rewritten_text, language], outputs=[rewritten_text])
         gen_title_btn.click(fn=_gen_title_tags, inputs=[rewritten_text], outputs=[main_title, sub_title, hot_title, tags])
